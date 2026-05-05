@@ -10,7 +10,6 @@ import os
 API_URL = "http://localhost:25555/api/ets2/telemetry"
 INTERVAL = 1.0
 
-# Auto-resolve path to FMS.json (no hardcoded path)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SIM_FILE = os.path.join(
     BASE_DIR,
@@ -48,15 +47,22 @@ def main():
     while True:
         try:
             ets = fetch_telemetry()
-            truck = ets.get("truck", {})
 
-            # === ETS2 DATA ===
+            truck = ets.get("truck", {})
+            trailer = ets.get("trailer", {})
+
+            # === BASIC INFO ===
             make = truck.get("make", "")
             model = truck.get("model", "")
 
-            speed = truck.get("speed", 0)
-            brake = truck.get("userBrake", 0)
+            # === CORE DATA ===
+            speed = abs(truck.get("speed", 0))
+            rpm = truck.get("engineRpm", 0)
+            fuel = truck.get("fuel", 0)
+            fuel_capacity = truck.get("fuelCapacity", 1)
+
             throttle = truck.get("userThrottle", 0)
+            brake = truck.get("userBrake", 0)
             clutch = truck.get("userClutch", 0)
 
             coolant = truck.get("waterTemperature", 0)
@@ -64,52 +70,72 @@ def main():
 
             cruise = truck.get("cruiseControlOn", False)
 
-            # Trailer → PTO mapping
-            pto = int(ets.get("trailer", {}).get("attached", False))
+            # PTO from trailer
+            pto = int(trailer.get("attached", False))
+
+            # === DERIVED VALUES ===
+
+            # Fuel %
+            fuel_percent = int((fuel / fuel_capacity) * 100) if fuel_capacity > 0 else 0
+
+            # Engine load (approximation from throttle)
+            engine_load = int(throttle * 100)
+
+            # Torque (approximation)
+            torque = int(throttle * 100)
+
+            # Service distance (fake but usable)
+            service_distance = int(truck.get("odometer", 0))
 
             # === LOAD FILE ===
             sim = load_sim()
 
-            # === UPDATE INFO ===
+            # === INFO ===
             sim["info"]["make"] = make
             sim["info"]["model"] = model
 
-            # === WRITE SIGNALS ===
+            # =========================
+            # WRITE SIGNALS
+            # =========================
 
-            # Brake pedal (0–100%)
+            # --- Brake ---
             sim["broadcast"]["signals"]["_x18F001FF"]["brake_pedal_position"]["value"] = int(brake * 100)
 
-            # Temperatures
+            # --- Temperatures ---
             sim["broadcast"]["signals"]["_x18FEEE18"]["engine_coolant_temperature"]["value"] = int(coolant)
             sim["broadcast"]["signals"]["_x18FEEE18"]["engine_oil_temperature"]["value"] = int(oil)
 
-            # === NEW BLOCK (_x18FEF1FF) ===
-
-            # Speed
+            # --- Driving state ---
             sim["broadcast"]["signals"]["_x18FEF1FF"]["speed"]["value"] = int(speed)
-
-            # Clutch (0–1 → 0/1)
             sim["broadcast"]["signals"]["_x18FEF1FF"]["clutch"]["value"] = int(clutch > 0)
-
-            # Cruise control (bool → 0/1)
             sim["broadcast"]["signals"]["_x18FEF1FF"]["cruise_control"]["value"] = int(cruise)
-
-            # Brake (bool)
             sim["broadcast"]["signals"]["_x18FEF1FF"]["brake"]["value"] = int(brake > 0)
-
-            # PTO
             sim["broadcast"]["signals"]["_x18FEF1FF"]["PTO"]["value"] = pto
+
+            # --- Engine ---
+            sim["broadcast"]["signals"]["_x18F00418"]["rpm"]["value"] = int(rpm)
+            sim["broadcast"]["signals"]["_x18F00418"]["torque"]["value"] = torque
+
+            # --- Fuel ---
+            sim["broadcast"]["signals"]["_x18FEFC18"]["fuel_level_1"]["value"] = fuel_percent
+            sim["broadcast"]["signals"]["_x18FEFC18"]["fuel_level_2"]["value"] = fuel_percent
+
+            # --- Service ---
+            sim["broadcast"]["signals"]["_x18FEC018"]["service_distance"]["value"] = service_distance
+
+            # --- Accelerator + load ---
+            sim["broadcast"]["signals"]["_x18F00318"]["accelerator_pedal"]["value"] = int(throttle * 100)
+            sim["broadcast"]["signals"]["_x18F00318"]["engine_load_at_current_speed"]["value"] = engine_load
 
             # === SAVE ===
             write_safe(sim)
 
             print(
                 f"{make} {model} | "
-                f"speed={speed:.1f} km/h "
-                f"brake%={int(brake*100)} "
-                f"brakeBool={int(brake>0)} "
-                f"coolant={int(coolant)} "
-                f"oil={int(oil)} "
+                f"speed={speed:.1f} "
+                f"rpm={int(rpm)} "
+                f"fuel={fuel_percent}% "
+                f"load={engine_load}% "
                 f"PTO={pto}"
             )
 
